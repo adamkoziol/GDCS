@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from accessoryfunctions.accessoryFunctions import *
+from Bio import SeqIO
 import shutil
 __author__ = 'adamkoziol'
 
@@ -18,7 +19,7 @@ class GDCS(object):
         self.allelealigner()
         # Find probes
         self.probefinder()
-        #
+        # Choose the best probes for each gene
         self.probes()
 
     def alleleparser(self):
@@ -75,7 +76,6 @@ class GDCS(object):
         """
         Retrieve the required alleles from a file of all alleles, and create organism-specific allele files
         """
-        from Bio import SeqIO
         printtime('Retrieving alleles', self.start)
         # Index all the records in the allele file
         printtime('Loading rMLST records', self.start)
@@ -112,19 +112,20 @@ class GDCS(object):
 
     def allelealigner(self):
         """
-
+        Perform a multiple sequence alignment of the allele sequences
         """
         from Bio.Align.Applications import ClustalOmegaCommandline
         from threading import Thread
         printtime('Aligning alleles', self.start)
         # Create the threads for the analysis
-        for sample in self.samples:
+        for _ in self.samples:
             threads = Thread(target=self.alignthreads, args=())
             threads.setDaemon(True)
             threads.start()
         for sample in self.samples:
             sample.alignpath = os.path.join(self.path, 'alignedalleles', sample.organism, '')
             make_path(sample.alignpath)
+            # Create a list to store objects
             sample.alignedalleles = list()
             for outputfile in sample.allelefiles:
                 aligned = os.path.join(sample.alignpath, os.path.basename(outputfile))
@@ -143,6 +144,7 @@ class GDCS(object):
             sample, clustalomega, outputfile, aligned = self.queue.get()
             if not os.path.isfile(aligned):
                 # Perform the alignments
+                # noinspection PyBroadException
                 try:
                     clustalomega()
                 # Files with a single sequence cannot be aligned. Copy the original file over to the aligned folder
@@ -152,107 +154,135 @@ class GDCS(object):
             self.queue.task_done()
 
     def probefinder(self):
+        """
+        Find the longest probe sequences
+        """
         from Bio import AlignIO
         from Bio.Align import AlignInfo
         import numpy
         printtime('Finding and filtering probe sequences', self.start)
         for sample in self.samples:
             # A list to store the metadata object for each alignment
-            sample.probe = list()
-            if sample.organism == 'Salmonella':
-                for align in sample.alignedalleles:
-                    # Create an object to store all the information for each alignment file
-                    metadata = GenObject()
-                    metadata.name = os.path.basename(align).split('.')[0]
-                    metadata.alignmentfile = align
-                    # Create an alignment object from the alignment file
-                    metadata.alignment = AlignIO.read(align, 'fasta')
-                    metadata.summaryalign = AlignInfo.SummaryInfo(metadata.alignment)
-                    # The dumb consensus is a very simple consensus sequence calculated from the alignment. Default
-                    # parameters of threshold=.7, and ambiguous='X' are used
-                    consensus = metadata.summaryalign.dumb_consensus()
-                    metadata.consensus = str(consensus)
-                    # The position-specific scoring matrix (PSSM) stores the frequency of each based observed at each
-                    # location along the entire consensus sequence
-                    metadata.pssm = metadata.summaryalign.pos_specific_score_matrix(consensus)
-                    metadata.identity = list()
-                    # Find the prevalence of each base for every location along the sequence
-                    for line in metadata.pssm:
+            sample.gene = list()
+            for align in sample.alignedalleles:
+                # Create an object to store all the information for each alignment file
+                metadata = GenObject()
+                metadata.name = os.path.basename(align).split('.')[0]
+                metadata.alignmentfile = align
+                # Create an alignment object from the alignment file
+                metadata.alignment = AlignIO.read(align, 'fasta')
+                metadata.summaryalign = AlignInfo.SummaryInfo(metadata.alignment)
+                # The dumb consensus is a very simple consensus sequence calculated from the alignment. Default
+                # parameters of threshold=.7, and ambiguous='X' are used
+                consensus = metadata.summaryalign.dumb_consensus()
+                metadata.consensus = str(consensus)
+                # The position-specific scoring matrix (PSSM) stores the frequency of each based observed at each
+                # location along the entire consensus sequence
+                metadata.pssm = metadata.summaryalign.pos_specific_score_matrix(consensus)
+                metadata.identity = list()
+                # Find the prevalence of each base for every location along the sequence
+                for line in metadata.pssm:
+                    try:
+                        bases = [line['A'], line['C'], line['G'], line['T'], line['-']]
+                        # Calculate the frequency of the most common base - don't count gaps
+                        metadata.identity.append(float('{:.2f}'.format(max(bases[:4]) / sum(bases) * 100)))
+                    except KeyError:
                         bases = [line['A'], line['C'], line['G'], line['T']]
-                        # Calculate the frequency of the most common base
+                        # Calculate the frequency of the most common base - don't count gaps
                         metadata.identity.append(float('{:.2f}'.format(max(bases) / sum(bases) * 100)))
-                    metadata.windows = list()
-                    passing = False
-                    # Create sliding windows of size 20 - 100 from the list of identities for each column of the alignment
-                    for i in reversed(range(self.min, self.max + 1)):
-                        if not passing:
-                            windowdata = MetadataObject()
-                            windowdata.size = i
-                            windowdata.max = 0
-                            # windowdata.hits = dict()
-                            windowdata.sliding = list()
-                            # Create a counter to store the starting location of the window in the sequence
-                            n = 0
-                            # Create sliding windows from the range of window sizes for the length of the list of identities
-                            windows = self.window(metadata.identity, i)
-                            #
-                            # cutoff = 80
-                            # metadata.probes = dict()
-                            # windowdata.location = '{}:{}'.format(n, n + i)
-                        #     metadata.probes[probelength] = dict()
-                        #     if not windowdata.hits:
-                            for window in windows:
-                                slidingdata = MetadataObject()
-                                if min(window) > self.cutoff:
-                                    slidingdata.location = '{}:{}'.format(n, n + i)
-                                    slidingdata.min = min(window)
-                                    slidingdata.mean = float('{:.2f}'.format(numpy.mean(window)))
-                                    slidingdata.sequence = str(consensus[n:n+i])
-                                    windowdata.max = slidingdata.mean if slidingdata.mean >= windowdata.max else windowdata.max
-                                    windowdata.min = slidingdata.mean if slidingdata.mean <= windowdata.max else windowdata.min
-                                    # windowdata.hits.update({slidingdata.location: {slidingdata.min: slidingdata.mean}})
-                                    windowdata.sliding.append(slidingdata)
-                                    passing = True
-                                n += 1
-
-                                # pass
-                                # metadata.probes[probelength].update({i: {min(window): float('{:.2f}'.format(numpy.mean(window)))}})
-                    #
-                    # for length in metadata.probes:
-                    #     for probe in metadata.probes[length]:
-                    #         for minimum, mean in metadata.probes[length][probe].items():
-                    #             print sample.organism, metadata.name, length, probe, minimum, mean
-                    #             print sample.organism, metadata.name, i, '{} - {}'.format(n, n + i), min(window), \
-                    #                 float('{:.2f}'.format(numpy.mean(window))), window
-                    #             print consensus[n:n+i]
-
-                            metadata.windows.append(windowdata)
-                    dotter()
-                    sample.probe.append(metadata)
-                    # print i, min(win), float('{:.2f}'.format(numpy.mean(win))), win
-        #     print line, max(bases), sum(bases)
+                # if metadata.name == 'BACT000064':
+                    # print sample.organism, metadata.identity
+                # List to store metadata objects
+                metadata.windows = list()
+                # Variable to store whether a suitable probe has been found for the current organism + gene pair.
+                # As the probe sizes are evaluated in descending size, as soon as a probe has been discovered, the
+                # search for more probes can stop, and subsequent probes will be smaller than the one(s) already found
+                passing = False
+                # Create sliding windows of size self.max - self.min from the list of identities for each column
+                # of the alignment
+                for i in reversed(range(self.min, self.max + 1)):
+                    if not passing:
+                        windowdata = MetadataObject()
+                        windowdata.size = i
+                        windowdata.max = 0
+                        windowdata.sliding = list()
+                        # Create a counter to store the starting location of the window in the sequence
+                        n = 0
+                        # Create sliding windows from the range of sizes for the list of identities
+                        windows = self.window(metadata.identity, i)
+                        # Go through each window from the collection of sliding windows to determine which window(s)
+                        # has (have) the best results
+                        for window in windows:
+                            # Create another object to store all the data for the window
+                            slidingdata = MetadataObject()
+                            # Only consider the window if every position has a percent identity greater than the cutoff
+                            if min(window) > self.cutoff:
+                                # Populate the object with the necessary variables
+                                slidingdata.location = '{}:{}'.format(n, n + i)
+                                slidingdata.min = min(window)
+                                slidingdata.mean = float('{:.2f}'.format(numpy.mean(window)))
+                                slidingdata.sequence = str(consensus[n:n+i])
+                                # Create attributes for evaluating windows. A greater/less windowdata.max/windowdata.min
+                                #  means a better/less overall percent identity, respectively
+                                windowdata.max = slidingdata.mean if slidingdata.mean >= windowdata.max \
+                                    else windowdata.max
+                                windowdata.min = slidingdata.mean if slidingdata.mean <= windowdata.max \
+                                    else windowdata.min
+                                # Add the object to the list of objects
+                                windowdata.sliding.append(slidingdata)
+                                passing = True
+                            n += 1
+                        # All the object to the list of objects
+                        metadata.windows.append(windowdata)
+                dotter()
+                # All the object to the list of objects
+                sample.gene.append(metadata)
 
     def probes(self):
-        # quit()
+        """
+        Find the 'best' probes for each gene by evaluating the percent identity of the probe to the best recorded
+        percent identity for that organism + gene pair
+        """
+        from Bio.Seq import Seq
+        from Bio.Alphabet import IUPAC
+        from Bio.SeqRecord import SeqRecord
         for sample in self.samples:
-            print sample.organism
-            # print sample.datastore
-            for probe in sample.probe:
-                for window in probe.windows:
-                    passed = False
-                    for sliding in window.sliding:
-
-                        if sliding.datastore and sliding.mean == window.max and sliding.mean >= window.min and not passed:
-                            print sample.organism, probe.name, window.size, window.max, sliding.datastore
-                            passed = True
-                # print probe.datastore
+            # Make a folder to store the probes
+            sample.gcdsoutputpath = os.path.join(self.gcdsoutputpath, sample.organism)
+            sample.gcdscombined = '{}/{}_gcds_combined.fasta'.format(sample.gcdsoutputpath, sample.organism)
+            make_path(sample.gcdsoutputpath)
+            with open(sample.gcdscombined, 'wb') as combined:
+                for gene in sample.gene:
+                    # Open the file to append
+                    gene.gcdsoutputfile = '{}/{}_gcds.tfa'.format(sample.gcdsoutputpath, gene.name)
+                    with open(gene.gcdsoutputfile, 'ab') as allelefile:
+                        for window in gene.windows:
+                            # Variable to record whether a probe has already been identified from this gene
+                            passed = False
+                            for sliding in window.sliding:
+                                # Only consider the sequence if the sliding object has data, if the probe in question
+                                # has a mean identity equal to the highest observed identity for that probe size, and
+                                # if the mean identity is greater or equal than the lowest observed identity
+                                if sliding.datastore and sliding.mean == window.max and sliding.mean >= window.min \
+                                        and not passed:
+                                    dnaseq = Seq(sliding.sequence, IUPAC.unambiguous_dna)
+                                    # Create a sequence record using BioPython
+                                    fasta = SeqRecord(dnaseq,
+                                                      # Without this, the header will be improperly formatted
+                                                      description='',
+                                                      # Use the gene name as the header
+                                                      id=gene.name)
+                                    # Write each probe to the files
+                                    SeqIO.write(fasta, allelefile, 'fasta')
+                                    SeqIO.write(fasta, combined, 'fasta')
+                                    passed = True
 
     @staticmethod
     def window(iterable, size):
         """
         https://coderwall.com/p/zvuvmg/sliding-window-in-python
-        :param iterable:
-        :param size:
+        :param iterable: string from which sliding windows are to be created
+        :param size: size of sliding window to create
         :return:
         """
         i = iter(iterable)
@@ -279,9 +309,10 @@ class GDCS(object):
         else:
             self.path = os.path.join(args.path, '')
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
-        self.rmlstfile = args.file
+        self.rmlstfile = os.path.join(self.path, args.file)
         self.organisms = args.organisms.split(',')
-        self.allelefile = args.allelefile
+        self.allelefile = os.path.join(self.path, args.allelefile)
+        self.gcdsoutputpath = os.path.join(self.path, 'gcds')
         self.min = args.min
         self.max = args.max
         self.cutoff = args.cutoff
@@ -315,10 +346,10 @@ if __name__ == '__main__':
                         default=20,
                         help='Minimum size of probe to create')
     parser.add_argument('-M', '--max',
-                        default=100,
+                        default=50,
                         help='Maximum size of probe to create')
     parser.add_argument('-c', '--cutoff',
-                        default=80,
+                        default=70,
                         help='Cutoff percent identity of a nucleotide location to use')
     # Get the arguments into an object
     arguments = parser.parse_args()
