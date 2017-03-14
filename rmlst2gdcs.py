@@ -19,6 +19,8 @@ class GDCS(object):
         self.allelealigner()
         # Find probes
         self.probefinder()
+        # Reset the dotter counter to 0
+        self.dotter.globalcounter()
         # Choose the best probes for each gene
         self.probes()
 
@@ -107,8 +109,11 @@ class GDCS(object):
                         for allele in sorted(alleles):
                             SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
                             SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                    self.dotter.dotter()
             # Add the populated metadata to the list
             self.samples.append(metadata)
+        # Reset the dotter counter to 0
+        self.dotter.globalcounter()
 
     def allelealigner(self):
         """
@@ -138,6 +143,8 @@ class GDCS(object):
                 sample.clustalomega = str(clustalomega)
                 self.queue.put((sample, clustalomega, outputfile, aligned))
         self.queue.join()
+        # Reset the dotter counter to 0
+        self.dotter.globalcounter()
 
     def alignthreads(self):
         while True:
@@ -150,7 +157,9 @@ class GDCS(object):
                 # Files with a single sequence cannot be aligned. Copy the original file over to the aligned folder
                 except Exception:
                     shutil.copyfile(outputfile, aligned)
-            dotter()
+            self.lock.acquire()
+            self.dotter.dotter()
+            self.lock.release()
             self.queue.task_done()
 
     def probefinder(self):
@@ -190,8 +199,6 @@ class GDCS(object):
                         bases = [line['A'], line['C'], line['G'], line['T']]
                         # Calculate the frequency of the most common base - don't count gaps
                         metadata.identity.append(float('{:.2f}'.format(max(bases) / sum(bases) * 100)))
-                # if metadata.name == 'BACT000064':
-                    # print sample.organism, metadata.identity
                 # List to store metadata objects
                 metadata.windows = list()
                 # Variable to store whether a suitable probe has been found for the current organism + gene pair.
@@ -234,7 +241,7 @@ class GDCS(object):
                             n += 1
                         # All the object to the list of objects
                         metadata.windows.append(windowdata)
-                dotter()
+                self.dotter.dotter()
                 # All the object to the list of objects
                 sample.gene.append(metadata)
 
@@ -246,6 +253,7 @@ class GDCS(object):
         from Bio.Seq import Seq
         from Bio.Alphabet import IUPAC
         from Bio.SeqRecord import SeqRecord
+        printtime('Determining optimal probe sequences', self.start)
         for sample in self.samples:
             # Make a folder to store the probes
             sample.gcdsoutputpath = os.path.join(self.gcdsoutputpath, sample.organism)
@@ -255,7 +263,7 @@ class GDCS(object):
                 for gene in sample.gene:
                     # Open the file to append
                     gene.gcdsoutputfile = '{}/{}_gcds.tfa'.format(sample.gcdsoutputpath, gene.name)
-                    with open(gene.gcdsoutputfile, 'ab') as allelefile:
+                    with open(gene.gcdsoutputfile, 'wb') as allelefile:
                         for window in gene.windows:
                             # Variable to record whether a probe has already been identified from this gene
                             passed = False
@@ -276,6 +284,7 @@ class GDCS(object):
                                     SeqIO.write(fasta, allelefile, 'fasta')
                                     SeqIO.write(fasta, combined, 'fasta')
                                     passed = True
+                                    self.dotter.dotter()
 
     @staticmethod
     def window(iterable, size):
@@ -283,7 +292,6 @@ class GDCS(object):
         https://coderwall.com/p/zvuvmg/sliding-window-in-python
         :param iterable: string from which sliding windows are to be created
         :param size: size of sliding window to create
-        :return:
         """
         i = iter(iterable)
         win = []
@@ -301,6 +309,7 @@ class GDCS(object):
         """
         import multiprocessing
         from Queue import Queue
+        import threading
         # Initialise variables
         self.start = startingtime
         # Define variables based on supplied arguments
@@ -321,6 +330,8 @@ class GDCS(object):
         self.samples = list()
         self.cpus = multiprocessing.cpu_count()
         self.queue = Queue(maxsize=self.cpus)
+        self.dotter = Dotter()
+        self.lock = threading.Lock()
         # Run the analyses
         self.runner()
 
