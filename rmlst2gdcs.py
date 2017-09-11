@@ -2,6 +2,7 @@
 from accessoryfunctions.accessoryFunctions import *
 from Bio import SeqIO
 import shutil
+import csv
 __author__ = 'adamkoziol'
 
 
@@ -13,6 +14,9 @@ class GDCS(object):
         """
         # Extract the alleles from the database
         self.alleleparser()
+        # Get the all the alleles into a single file
+        if self.complete:
+            self.allelecomplement()
         # Create .fasta files of the the allele sequences
         self.alleleretriever()
         # Align the alleles
@@ -29,7 +33,6 @@ class GDCS(object):
         Parse a .csv file of rMLST alleles, and find all alleles for each gene for each organism of interest present in
         the file
         """
-        import csv
         printtime('Parsing alleles', self.start)
         # Initialise each organism of interest as a sub-dictionary
         for organism in self.organisms:
@@ -38,7 +41,7 @@ class GDCS(object):
             if organism == 'Escherichia' or organism == 'Salmonella' or organism == 'Enterobacter':
                 self.alleledict['Enterobacteriaceae'] = dict()
         # Get all the gene names into a list
-        with open(self.rmlstfile, 'rb') as rmlst:
+        with open(self.rmlstfile, 'r') as rmlst:
             # Grab the header from the file
             header = rmlst.readline().rstrip()
             # Find all the gene names in the header
@@ -46,9 +49,16 @@ class GDCS(object):
         # Further prepare the dictionary to store a set of alleles for each gene
         for organism in self.organisms:
             for gene in self.genes:
-                self.alleledict[organism][gene] = set()
-                if organism == 'Escherichia' or organism == 'Salmonella' or organism == 'Enterobacter':
-                    self.alleledict['Enterobacteriaceae'][gene] = set()
+                # Based on in silico testing, certain rMLST genes have alleles that pass the criteria for creating
+                # GDCS probes, but fail when reference mapping reads to the probes
+                include = True
+                for excludegenus, excludegene in self.excludedict.items():
+                    if organism == excludegenus and gene == excludegene:
+                        include = False
+                if include:
+                    self.alleledict[organism][gene] = set()
+                    if organism == 'Escherichia' or organism == 'Salmonella' or organism == 'Enterobacter':
+                        self.alleledict['Enterobacteriaceae'][gene] = set()
         # Read the csv file into memory as a dictionary
         rmlstdict = csv.DictReader(open(self.rmlstfile))
         # Iterate through all the entries in the dictionary
@@ -67,12 +77,79 @@ class GDCS(object):
                             allele = row[gene]
                         # Split on the space between two alleles (10 692) and add both to the set
                         for alleles in allele.split(' '):
-                            # Add the integer of the allele to the set
-                            self.alleledict[row['Genus']][gene].add(int(alleles))
+                            try:
+                                # Add the integer of the allele to the set
+                                self.alleledict[row['Genus']][gene].add(int(alleles))
+                            # Skips adding the allele if it is an 'N' or if the organism/gene pair is one of the
+                            # excluded sets
+                            except (ValueError, KeyError):
+                                pass
                             # Add all the Enterobacteriaceae to a combined entry
                             if row['Genus'] == 'Escherichia' or row['Genus'] == 'Salmonella' \
                                     or row['Genus'] == 'Enterobacter':
-                                self.alleledict['Enterobacteriaceae'][gene].add(int(alleles))
+                                try:
+                                    self.alleledict['Enterobacteriaceae'][gene].add(int(alleles))
+                                except ValueError:
+                                    pass
+
+    def allelecomplement(self):
+        """
+        Retrieve the required alleles from a file of all alleles, and create complete allele files
+        """
+        printtime('Retrieving complete list of alleles', self.start)
+        # Read the csv file into memory as a dictionary
+        completedict = csv.DictReader(open(self.rmlstfile))
+        # Iterate through all the entries in the dictionary
+        for row in completedict:
+            # Grab all the alleles found for every organism in the list
+            for gene in row:
+                if gene.startswith('BACT'):
+                    # Remove the 'actual' allele from the sample profile e.g. for 10 692 (N), the (N) is removed
+                    # Additionally, the 10 692 are split into 10 and 692
+                    allele = row[gene].split(' (')[0]
+                    # Split on the space between two alleles (10 692) and add both to the set
+                    for alleles in allele.split(' '):
+                        try:
+                            # Add the integer of the allele to the set
+                            self.completedict[gene].add(int(alleles))
+                        except KeyError:
+                            self.completedict[gene] = set()
+                            try:
+                                self.completedict[gene].add(int(alleles))
+                            # Skips adding the allele if it is an 'N'
+                            except ValueError:
+                                pass
+                        except ValueError:
+                            pass
+
+        # Index all the records in the allele file
+        printtime('Loading complete rMLST records', self.start)
+        recorddict = SeqIO.index(self.allelefile, 'fasta')
+        printtime('Creating complete allele output files', self.start)
+        # Create the organism-specific files of alleles
+        outpath = os.path.join(self.path, 'outputalleles', 'complete', '')
+        # Delete and recreate the output path - as the files are appended to each time, they will be too large if
+        # this script is run more than once
+        try:
+            shutil.rmtree(outpath)
+        except OSError:
+            pass
+        make_path(outpath)
+        combined = '{}gdcs_alleles.fasta'.format(outpath)
+        allelefilelist = list()
+        with open(combined, 'wb') as combined:
+            for gene, alleles in sorted(self.completedict.items()):
+                # Open the file to append
+                allelefiles = '{}{}.tfa'.format(outpath, gene)
+                allelefilelist.append(allelefiles)
+                with open(allelefiles, 'ab') as allelefile:
+                    # Write each allele record to the file
+                    for allele in sorted(alleles):
+                        SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
+                        SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                self.dotter.dotter()
+        # Reset the dotter counter to 0
+        self.dotter.globalcounter()
 
     def alleleretriever(self):
         """
@@ -123,7 +200,7 @@ class GDCS(object):
         from threading import Thread
         printtime('Aligning alleles', self.start)
         # Create the threads for the analysis
-        for _ in self.samples:
+        for _ in range(self.cpus):
             threads = Thread(target=self.alignthreads, args=())
             threads.setDaemon(True)
             threads.start()
@@ -308,7 +385,7 @@ class GDCS(object):
         :param startingtime: time the script was started
         """
         import multiprocessing
-        from Queue import Queue
+        from queue import Queue
         import threading
         # Initialise variables
         self.start = startingtime
@@ -325,13 +402,16 @@ class GDCS(object):
         self.min = args.min
         self.max = args.max
         self.cutoff = args.cutoff
+        self.complete = args.complete
         self.genes = list()
         self.alleledict = dict()
+        self.completedict = dict()
         self.samples = list()
         self.cpus = multiprocessing.cpu_count()
         self.queue = Queue(maxsize=self.cpus)
         self.dotter = Dotter()
         self.lock = threading.Lock()
+        self.excludedict = {'Listeria': 'BACT000014', 'Salmonella': 'BACT000062'}
         # Run the analyses
         self.runner()
 
@@ -362,6 +442,9 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--cutoff',
                         default=70,
                         help='Cutoff percent identity of a nucleotide location to use')
+    parser.add_argument('-C', '--complete',
+                        action='store_true',
+                        help='Optionally store all alleles found in the rMLST results file')
     # Get the arguments into an object
     arguments = parser.parse_args()
     arguments.pipeline = False
@@ -372,4 +455,4 @@ if __name__ == '__main__':
     GDCS(arguments, start)
 
     # Print a bold, green exit statement
-    print '\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - start) + '\033[0m'
+    print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - start) + '\033[0m')
