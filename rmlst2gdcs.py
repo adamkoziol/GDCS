@@ -1,8 +1,9 @@
-#!/usr/bin/env python
-from accessoryfunctions.accessoryFunctions import *
+#!/usr/bin/env python3
+from accessoryFunctions.accessoryFunctions import printtime, MetadataObject, GenObject, make_path, Dotter
 from Bio import SeqIO
 import shutil
 import csv
+import os
 __author__ = 'adamkoziol'
 
 
@@ -135,12 +136,12 @@ class GDCS(object):
         except OSError:
             pass
         make_path(outpath)
-        combined = '{}gdcs_alleles.fasta'.format(outpath)
+        combined = os.path.join(outpath, 'gdcs_alleles.fasta')
         allelefilelist = list()
         with open(combined, 'wb') as combined:
             for gene, alleles in sorted(self.completedict.items()):
                 # Open the file to append
-                allelefiles = '{}{}.tfa'.format(outpath, gene)
+                allelefiles = os.path.join(outpath, '{}.tfa'.format(gene))
                 allelefilelist.append(allelefiles)
                 with open(allelefiles, 'ab') as allelefile:
                     # Write each allele record to the file
@@ -174,14 +175,14 @@ class GDCS(object):
             except OSError:
                 pass
             make_path(metadata.outpath)
-            metadata.combined = '{}gdcs_alleles.fasta'.format(metadata.outpath)
+            metadata.combined = os.path.join(metadata.outpath, 'gdcs_alleles.fasta')
             metadata.allelefiles = list()
-            with open(metadata.combined, 'wb') as combined:
+            with open(metadata.combined, 'w') as combined:
                 for gene, alleles in sorted(self.alleledict[organism].items()):
                     # Open the file to append
-                    allelefiles = '{}{}.tfa'.format(metadata.outpath, gene)
+                    allelefiles = os.path.join(metadata.outpath, '{}.tfa'.format(gene))
                     metadata.allelefiles.append(allelefiles)
-                    with open(allelefiles, 'ab') as allelefile:
+                    with open(allelefiles, 'a') as allelefile:
                         # Write each allele record to the file
                         for allele in sorted(alleles):
                             SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
@@ -205,7 +206,7 @@ class GDCS(object):
             threads.setDaemon(True)
             threads.start()
         for sample in self.samples:
-            sample.alignpath = os.path.join(self.path, 'alignedalleles', sample.organism, '')
+            sample.alignpath = os.path.join(self.path, 'alignedalleles', sample.organism)
             make_path(sample.alignpath)
             # Create a list to store objects
             sample.alignedalleles = list()
@@ -253,7 +254,7 @@ class GDCS(object):
             for align in sample.alignedalleles:
                 # Create an object to store all the information for each alignment file
                 metadata = GenObject()
-                metadata.name = os.path.basename(align).split('.')[0]
+                metadata.name = os.path.splitext(os.path.basename(align))[0]
                 metadata.alignmentfile = align
                 # Create an alignment object from the alignment file
                 metadata.alignment = AlignIO.read(align, 'fasta')
@@ -334,13 +335,13 @@ class GDCS(object):
         for sample in self.samples:
             # Make a folder to store the probes
             sample.gcdsoutputpath = os.path.join(self.gcdsoutputpath, sample.organism)
-            sample.gcdscombined = '{}/{}_gcds_combined.fasta'.format(sample.gcdsoutputpath, sample.organism)
+            sample.gcdscombined = os.path.join(sample.gcdsoutputpath, '{}_gcds_combined.fasta'.format(sample.organism))
             make_path(sample.gcdsoutputpath)
-            with open(sample.gcdscombined, 'wb') as combined:
+            with open(sample.gcdscombined, 'w') as combined:
                 for gene in sample.gene:
                     # Open the file to append
-                    gene.gcdsoutputfile = '{}/{}_gcds.tfa'.format(sample.gcdsoutputpath, gene.name)
-                    with open(gene.gcdsoutputfile, 'wb') as allelefile:
+                    gene.gcdsoutputfile = os.path.join(sample.gcdsoutputpath, '{}_gcds.tfa'.format(gene.name))
+                    with open(gene.gcdsoutputfile, 'w') as allelefile:
                         for window in gene.windows:
                             # Variable to record whether a probe has already been identified from this gene
                             passed = False
@@ -390,10 +391,7 @@ class GDCS(object):
         # Initialise variables
         self.start = startingtime
         # Define variables based on supplied arguments
-        if args.path.endswith('/'):
-            self.path = args.path
-        else:
-            self.path = os.path.join(args.path, '')
+        self.path = os.path.join(args.path)
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
         self.rmlstfile = os.path.join(self.path, args.file)
         self.organisms = args.organisms.split(',')
@@ -414,6 +412,7 @@ class GDCS(object):
         self.excludedict = {'Listeria': 'BACT000014', 'Salmonella': 'BACT000062'}
         # Run the analyses
         self.runner()
+
 
 if __name__ == '__main__':
     # Argument parser for user-inputted values, and a nifty help menu
@@ -456,3 +455,7 @@ if __name__ == '__main__':
 
     # Print a bold, green exit statement
     print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - start) + '\033[0m')
+
+'''
+/nas0/bio_requests/8318 -a rmlstcombinedalleles.fa -f rmlst.csv -C
+'''

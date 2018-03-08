@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-from accessoryfunctions.accessoryFunctions import *
+from accessoryFunctions.accessoryFunctions import printtime, make_path
+import os
 __author__ = 'adamkoziol'
 
 
@@ -15,7 +16,7 @@ class Format(object):
         """
         printtime('Parsing rMLST output file', self.start)
         # Open the rmlst file, and iterate through each line
-        with open(self.rmlstfile, 'rb') as rmlstfile:
+        with open(self.rmlstfile, 'r') as rmlstfile:
             self.header = rmlstfile.readline()
             for line in rmlstfile:
                 # Split the line on commas
@@ -30,32 +31,32 @@ class Format(object):
                     self.sequencetypes.append(data)
 
     def reformat(self):
+        """
+        Create the reformatted output file
+        """
         printtime('Reformatting results', self.start)
-        with open('{}{}_reformatted.csv'.format(self.outputpath, self.organism), 'wb') as reformatted:
+        with open(os.path.join(self.outputpath, '{}_reformatted.csv'.format(self.organism)), 'w') as reformatted:
             reformatted.write(self.header)
             for line in self.sequencetypes:
                 reformatted.write(','.join(line))
 
-    def __init__(self, args, startingtime):
+    def __init__(self, args):
         """
         :param args: command line arguments
-        :param startingtime: time the script was started
         """
         # Initialise variables
-        self.start = startingtime
+        self.start = args.start
         # Define variables based on supplied arguments
-        if args.path.endswith('/'):
-            self.path = args.path
-        else:
-            self.path = os.path.join(args.path, '')
+        self.path = os.path.join(args.path)
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
         self.rmlstfile = os.path.join(self.path, args.file)
         self.organism = args.organism
-        self.outputpath = os.path.join(self.path, 'reformatted', '')
+        self.outputpath = os.path.join(self.path, 'reformatted')
         make_path(self.outputpath)
         self.header = str()
         self.sequencetypes = list()
         self.runner()
+
 
 if __name__ == '__main__':
     # Argument parser for user-inputted values, and a nifty help menu
@@ -76,10 +77,14 @@ if __name__ == '__main__':
     arguments = parser.parse_args()
     arguments.pipeline = False
     # Define the start time
-    start = time.time()
+    arguments.start = time.time()
 
     # Run the script
-    Format(arguments, start)
+    Format(arguments)
 
     # Print a bold, green exit statement
-    print '\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - start) + '\033[0m'
+    print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - arguments.start) + '\033[0m')
+
+'''
+/nas0/bio_requests/8318/rawoutput -f MLST_2017.03.17.18.10.01.csv -o Enterobacter
+'''
