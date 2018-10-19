@@ -25,17 +25,17 @@ class Format(object):
                 # (e.g. the header), and if the strain name is present. Certain strains without exact matches will
                 # return multiple best hits, but only the first hit is required (this line will have the strain name)
                 if data[0] != 'Strain' and data[0]:
-                    # Replace the 'NA' value for Genus with the supplied organism name
-                    data[1] = self.organism
-                    # Add the data to the list that will be used to create the reformatted file
-                    self.sequencetypes.append(data)
+                    # Ensure that the genus is one of the target genera
+                    if data[1] in self.organisms:
+                        # Add the data to the list that will be used to create the reformatted file
+                        self.sequencetypes.append(data)
 
     def reformat(self):
         """
         Create the reformatted output file
         """
         printtime('Reformatting results', self.start)
-        with open(os.path.join(self.outputpath, '{}_reformatted.csv'.format(self.organism)), 'w') as reformatted:
+        with open(os.path.join(self.outputpath, 'combined_rmlst_reformatted.csv'), 'w') as reformatted:
             reformatted.write(self.header)
             for line in self.sequencetypes:
                 reformatted.write(','.join(line))
@@ -50,7 +50,7 @@ class Format(object):
         self.path = os.path.join(args.path)
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
         self.rmlstfile = os.path.join(self.path, args.file)
-        self.organism = args.organism
+        self.organisms = ['Enterobacter', 'Escherichia', 'Listeria', 'Salmonella', 'Vibrio']
         self.outputpath = os.path.join(self.path, 'reformatted')
         make_path(self.outputpath)
         self.header = str()
@@ -71,9 +71,6 @@ if __name__ == '__main__':
     parser.add_argument('-f', '--file',
                         required=True,
                         help='Name of .csv file containing rMLST information. Must be within the supplied path')
-    parser.add_argument('-o', '--organism',
-                        help='Organism name to use when populating the new, formatted .csv file')
-
     arguments = parser.parse_args()
     arguments.pipeline = False
     # Define the start time

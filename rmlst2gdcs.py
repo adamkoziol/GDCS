@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 from accessoryFunctions.accessoryFunctions import printtime, MetadataObject, GenObject, make_path, Dotter
+from Bio.Align.Applications import ClustalOmegaCommandline
+from Bio.SeqRecord import SeqRecord
+from Bio.Align import AlignInfo
+from Bio.Alphabet import IUPAC
+from Bio.Seq import Seq
+from Bio import AlignIO
 from Bio import SeqIO
+from argparse import ArgumentParser
+from threading import Lock, Thread
+from queue import Queue
+import multiprocessing
 import shutil
+import numpy
+import time
 import csv
 import os
 __author__ = 'adamkoziol'
@@ -138,16 +150,20 @@ class GDCS(object):
         make_path(outpath)
         combined = os.path.join(outpath, 'gdcs_alleles.fasta')
         allelefilelist = list()
-        with open(combined, 'wb') as combined:
+        with open(combined, 'w') as combined:
             for gene, alleles in sorted(self.completedict.items()):
                 # Open the file to append
                 allelefiles = os.path.join(outpath, '{}.tfa'.format(gene))
                 allelefilelist.append(allelefiles)
-                with open(allelefiles, 'ab') as allelefile:
+                with open(allelefiles, 'a') as allelefile:
                     # Write each allele record to the file
                     for allele in sorted(alleles):
-                        SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
-                        SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                        # Skip adding alleles that are no longer in the database
+                        try:
+                            SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
+                            SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                        except KeyError:
+                            pass
                 self.dotter.dotter()
         # Reset the dotter counter to 0
         self.dotter.globalcounter()
@@ -185,8 +201,12 @@ class GDCS(object):
                     with open(allelefiles, 'a') as allelefile:
                         # Write each allele record to the file
                         for allele in sorted(alleles):
-                            SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
-                            SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                            # Skip adding alleles that are no longer in the database
+                            try:
+                                SeqIO.write(recorddict['{}_{}'.format(gene, allele)], allelefile, 'fasta')
+                                SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
+                            except KeyError:
+                                pass
                     self.dotter.dotter()
             # Add the populated metadata to the list
             self.samples.append(metadata)
@@ -197,8 +217,7 @@ class GDCS(object):
         """
         Perform a multiple sequence alignment of the allele sequences
         """
-        from Bio.Align.Applications import ClustalOmegaCommandline
-        from threading import Thread
+
         printtime('Aligning alleles', self.start)
         # Create the threads for the analysis
         for _ in range(self.cpus):
@@ -244,9 +263,6 @@ class GDCS(object):
         """
         Find the longest probe sequences
         """
-        from Bio import AlignIO
-        from Bio.Align import AlignInfo
-        import numpy
         printtime('Finding and filtering probe sequences', self.start)
         for sample in self.samples:
             # A list to store the metadata object for each alignment
@@ -257,7 +273,30 @@ class GDCS(object):
                 metadata.name = os.path.splitext(os.path.basename(align))[0]
                 metadata.alignmentfile = align
                 # Create an alignment object from the alignment file
-                metadata.alignment = AlignIO.read(align, 'fasta')
+                try:
+                    metadata.alignment = AlignIO.read(align, 'fasta')
+                except ValueError:
+                    # If a ValueError: Sequences must all be the same length is raised, pad the shorter sequences
+                    # to be the length of the longest sequence
+                    # https://stackoverflow.com/questions/32833230/biopython-alignio-valueerror-says-strings-must-be-same-length
+                    records = SeqIO.parse(align, 'fasta')
+                    # Make a copy, otherwise our generator is exhausted after calculating maxlen
+                    records = list(records)
+                    # Calculate the length of the longest sequence
+                    maxlen = max(len(record.seq) for record in records)
+                    # Pad sequences so that they all have the same length
+                    for record in records:
+                        if len(record.seq) != maxlen:
+                            sequence = str(record.seq).ljust(maxlen, '.')
+                            record.seq = Seq(sequence)
+                    assert all(len(record.seq) == maxlen for record in records)
+                    # Write to file and do alignment
+                    metadata.alignmentfile = '{}_padded.tfa'.format(os.path.splitext(align)[0])
+                    with open(metadata.alignmentfile, 'w') as padded:
+                        SeqIO.write(records, padded, 'fasta')
+                    # Align the padded sequences
+                    metadata.alignment = AlignIO.read(metadata.alignmentfile, 'fasta')
+
                 metadata.summaryalign = AlignInfo.SummaryInfo(metadata.alignment)
                 # The dumb consensus is a very simple consensus sequence calculated from the alignment. Default
                 # parameters of threshold=.7, and ambiguous='X' are used
@@ -328,20 +367,17 @@ class GDCS(object):
         Find the 'best' probes for each gene by evaluating the percent identity of the probe to the best recorded
         percent identity for that organism + gene pair
         """
-        from Bio.Seq import Seq
-        from Bio.Alphabet import IUPAC
-        from Bio.SeqRecord import SeqRecord
         printtime('Determining optimal probe sequences', self.start)
         for sample in self.samples:
             # Make a folder to store the probes
-            sample.gcdsoutputpath = os.path.join(self.gcdsoutputpath, sample.organism)
-            sample.gcdscombined = os.path.join(sample.gcdsoutputpath, '{}_gcds_combined.fasta'.format(sample.organism))
-            make_path(sample.gcdsoutputpath)
-            with open(sample.gcdscombined, 'w') as combined:
+            sample.gdcsoutputpath = os.path.join(self.gdcsoutputpath, sample.organism)
+            sample.gdcscombined = os.path.join(sample.gdcsoutputpath, '{}_gdcs_combined.fasta'.format(sample.organism))
+            make_path(sample.gdcsoutputpath)
+            with open(sample.gdcscombined, 'w') as combined:
                 for gene in sample.gene:
                     # Open the file to append
-                    gene.gcdsoutputfile = os.path.join(sample.gcdsoutputpath, '{}_gcds.tfa'.format(gene.name))
-                    with open(gene.gcdsoutputfile, 'w') as allelefile:
+                    gene.gdcsoutputfile = os.path.join(sample.gdcsoutputpath, '{}_gdcs.tfa'.format(gene.name))
+                    with open(gene.gdcsoutputfile, 'w') as allelefile:
                         for window in gene.windows:
                             # Variable to record whether a probe has already been identified from this gene
                             passed = False
@@ -380,23 +416,19 @@ class GDCS(object):
             win = win[1:] + [e]
             yield win
 
-    def __init__(self, args, startingtime):
+    def __init__(self, args):
         """
         :param args: command line arguments
-        :param startingtime: time the script was started
         """
-        import multiprocessing
-        from queue import Queue
-        import threading
         # Initialise variables
-        self.start = startingtime
+        self.start = args.start
         # Define variables based on supplied arguments
         self.path = os.path.join(args.path)
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
         self.rmlstfile = os.path.join(self.path, args.file)
         self.organisms = args.organisms.split(',')
         self.allelefile = os.path.join(self.path, args.allelefile)
-        self.gcdsoutputpath = os.path.join(self.path, 'gcds')
+        self.gdcsoutputpath = os.path.join(self.path, 'gdcs')
         self.min = args.min
         self.max = args.max
         self.cutoff = args.cutoff
@@ -408,16 +440,13 @@ class GDCS(object):
         self.cpus = multiprocessing.cpu_count()
         self.queue = Queue(maxsize=self.cpus)
         self.dotter = Dotter()
-        self.lock = threading.Lock()
+        self.lock = Lock()
         self.excludedict = {'Listeria': 'BACT000014', 'Salmonella': 'BACT000062'}
         # Run the analyses
         self.runner()
 
 
 if __name__ == '__main__':
-    # Argument parser for user-inputted values, and a nifty help menu
-    from argparse import ArgumentParser
-    import time
     # Parser for arguments
     parser = ArgumentParser(description='For all organisms of interest, create .fasta files containing each allele'
                                         'found for every rMLST gene')
@@ -448,13 +477,13 @@ if __name__ == '__main__':
     arguments = parser.parse_args()
     arguments.pipeline = False
     # Define the start time
-    start = time.time()
+    arguments.start = time.time()
 
     # Run the script
-    GDCS(arguments, start)
+    GDCS(arguments)
 
     # Print a bold, green exit statement
-    print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - start) + '\033[0m')
+    print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - arguments.start) + '\033[0m')
 
 '''
 /nas0/bio_requests/8318 -a rmlstcombinedalleles.fa -f rmlst.csv -C
