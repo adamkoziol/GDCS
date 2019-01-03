@@ -50,7 +50,8 @@ class Format(object):
         self.path = os.path.join(args.path)
         assert os.path.isdir(self.path), u'Supplied path is not a valid directory {0!r:s}'.format(self.path)
         self.rmlstfile = os.path.join(self.path, args.file)
-        self.organisms = ['Enterobacter', 'Escherichia', 'Listeria', 'Salmonella', 'Vibrio']
+        self.organisms = ['Bacillus', 'Campylobacter', 'Enterobacter', 'Escherichia', 'Listeria', 'Salmonella',
+                          'Vibrio']
         self.outputpath = os.path.join(self.path, 'reformatted')
         make_path(self.outputpath)
         self.header = str()
