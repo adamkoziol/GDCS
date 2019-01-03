@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from accessoryFunctions.accessoryFunctions import printtime, MetadataObject, GenObject, make_path, Dotter
+from accessoryFunctions.accessoryFunctions import GenObject, make_path, MetadataObject, SetupLogging
 from Bio.Align.Applications import ClustalOmegaCommandline
 from Bio.SeqRecord import SeqRecord
 from Bio.Align import AlignInfo
@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from threading import Lock, Thread
 from queue import Queue
 import multiprocessing
+import logging
 import shutil
 import numpy
 import time
@@ -36,8 +37,6 @@ class GDCS(object):
         self.allelealigner()
         # Find probes
         self.probefinder()
-        # Reset the dotter counter to 0
-        self.dotter.globalcounter()
         # Choose the best probes for each gene
         self.probes()
 
@@ -46,7 +45,7 @@ class GDCS(object):
         Parse a .csv file of rMLST alleles, and find all alleles for each gene for each organism of interest present in
         the file
         """
-        printtime('Parsing alleles', self.start)
+        logging.info('Parsing alleles')
         # Initialise each organism of interest as a sub-dictionary
         for organism in self.organisms:
             self.alleledict[organism] = dict()
@@ -109,7 +108,7 @@ class GDCS(object):
         """
         Retrieve the required alleles from a file of all alleles, and create complete allele files
         """
-        printtime('Retrieving complete list of alleles', self.start)
+        logging.info('Retrieving complete list of alleles')
         # Read the csv file into memory as a dictionary
         completedict = csv.DictReader(open(self.rmlstfile))
         # Iterate through all the entries in the dictionary
@@ -136,9 +135,9 @@ class GDCS(object):
                             pass
 
         # Index all the records in the allele file
-        printtime('Loading complete rMLST records', self.start)
+        logging.info('Loading complete rMLST records')
         recorddict = SeqIO.index(self.allelefile, 'fasta')
-        printtime('Creating complete allele output files', self.start)
+        logging.info('Creating complete allele output files')
         # Create the organism-specific files of alleles
         outpath = os.path.join(self.path, 'outputalleles', 'complete', '')
         # Delete and recreate the output path - as the files are appended to each time, they will be too large if
@@ -164,19 +163,16 @@ class GDCS(object):
                             SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
                         except KeyError:
                             pass
-                self.dotter.dotter()
-        # Reset the dotter counter to 0
-        self.dotter.globalcounter()
 
     def alleleretriever(self):
         """
         Retrieve the required alleles from a file of all alleles, and create organism-specific allele files
         """
-        printtime('Retrieving alleles', self.start)
+        logging.info('Retrieving alleles')
         # Index all the records in the allele file
-        printtime('Loading rMLST records', self.start)
+        logging.info('Loading rMLST records')
         recorddict = SeqIO.index(self.allelefile, 'fasta')
-        printtime('Creating allele output files', self.start)
+        logging.info('Creating allele output files')
         # Create the organism-specific files of alleles
         for organism in sorted(self.alleledict):
             # Make an object to store information for each strain
@@ -207,18 +203,15 @@ class GDCS(object):
                                 SeqIO.write(recorddict['{}_{}'.format(gene, allele)], combined, 'fasta')
                             except KeyError:
                                 pass
-                    self.dotter.dotter()
             # Add the populated metadata to the list
             self.samples.append(metadata)
-        # Reset the dotter counter to 0
-        self.dotter.globalcounter()
 
     def allelealigner(self):
         """
         Perform a multiple sequence alignment of the allele sequences
         """
 
-        printtime('Aligning alleles', self.start)
+        logging.info('Aligning alleles')
         # Create the threads for the analysis
         for _ in range(self.cpus):
             threads = Thread(target=self.alignthreads, args=())
@@ -240,8 +233,6 @@ class GDCS(object):
                 sample.clustalomega = str(clustalomega)
                 self.queue.put((sample, clustalomega, outputfile, aligned))
         self.queue.join()
-        # Reset the dotter counter to 0
-        self.dotter.globalcounter()
 
     def alignthreads(self):
         while True:
@@ -254,16 +245,13 @@ class GDCS(object):
                 # Files with a single sequence cannot be aligned. Copy the original file over to the aligned folder
                 except Exception:
                     shutil.copyfile(outputfile, aligned)
-            self.lock.acquire()
-            self.dotter.dotter()
-            self.lock.release()
             self.queue.task_done()
 
     def probefinder(self):
         """
         Find the longest probe sequences
         """
-        printtime('Finding and filtering probe sequences', self.start)
+        logging.info('Finding and filtering probe sequences')
         for sample in self.samples:
             # A list to store the metadata object for each alignment
             sample.gene = list()
@@ -358,7 +346,6 @@ class GDCS(object):
                             n += 1
                         # All the object to the list of objects
                         metadata.windows.append(windowdata)
-                self.dotter.dotter()
                 # All the object to the list of objects
                 sample.gene.append(metadata)
 
@@ -367,7 +354,7 @@ class GDCS(object):
         Find the 'best' probes for each gene by evaluating the percent identity of the probe to the best recorded
         percent identity for that organism + gene pair
         """
-        printtime('Determining optimal probe sequences', self.start)
+        logging.info('Determining optimal probe sequences')
         for sample in self.samples:
             # Make a folder to store the probes
             sample.gdcsoutputpath = os.path.join(self.gdcsoutputpath, sample.organism)
@@ -398,7 +385,6 @@ class GDCS(object):
                                     SeqIO.write(fasta, allelefile, 'fasta')
                                     SeqIO.write(fasta, combined, 'fasta')
                                     passed = True
-                                    self.dotter.dotter()
 
     @staticmethod
     def window(iterable, size):
@@ -420,6 +406,7 @@ class GDCS(object):
         """
         :param args: command line arguments
         """
+        SetupLogging(debug=True)
         # Initialise variables
         self.start = args.start
         # Define variables based on supplied arguments
@@ -439,9 +426,9 @@ class GDCS(object):
         self.samples = list()
         self.cpus = multiprocessing.cpu_count()
         self.queue = Queue(maxsize=self.cpus)
-        self.dotter = Dotter()
         self.lock = Lock()
-        self.excludedict = {'Listeria': 'BACT000014', 'Salmonella': 'BACT000062'}
+        self.excludedict = {'Listeria': 'BACT000014',
+                            'Salmonella': 'BACT000062'}
         # Run the analyses
         self.runner()
 
@@ -456,7 +443,7 @@ if __name__ == '__main__':
                         required=True,
                         help='Name of .csv file containing rMLST information. Must be within the supplied path')
     parser.add_argument('-o', '--organisms',
-                        default='Escherichia,Listeria,Salmonella,Enterobacter',
+                        default='Bacillus,Escherichia,Listeria,Salmonella,Enterobacter,Vibrio,Campylobacter',
                         help='Comma-separated list of organisms of interest')
     parser.add_argument('-a', '--allelefile',
                         required=True,
@@ -483,7 +470,7 @@ if __name__ == '__main__':
     GDCS(arguments)
 
     # Print a bold, green exit statement
-    print('\033[92m' + '\033[1m' + "\nElapsed Time: %0.2f seconds" % (time.time() - arguments.start) + '\033[0m')
+    logging.info('Analyses Complete!')
 
 '''
 /nas0/bio_requests/8318 -a rmlstcombinedalleles.fa -f rmlst.csv -C
