@@ -443,7 +443,7 @@ if __name__ == '__main__':
                         required=True,
                         help='Name of .csv file containing rMLST information. Must be within the supplied path')
     parser.add_argument('-o', '--organisms',
-                        default='Bacillus,Escherichia,Listeria,Salmonella,Enterobacter,Vibrio,Campylobacter',
+                        default='Bacillus,Campylobacter,Enterobacter,Escherichia,Listeria,Salmonella,Vibrio',
                         help='Comma-separated list of organisms of interest')
     parser.add_argument('-a', '--allelefile',
                         required=True,
